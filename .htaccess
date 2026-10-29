@@ -1,0 +1,14 @@
+Options -Indexes
+
+<IfModule mod_mime.c>
+    AddDefaultCharset UTF-8
+</IfModule>
+
+<FilesMatch "^(\.env|\.git|composer\.(json|lock)|README\.md|status_report\.md)$">
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^(app|config|database|docs|storage|\.git)(/|$) - [F,L,NC]
+</IfModule>
