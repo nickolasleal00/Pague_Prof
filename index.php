@@ -13,6 +13,7 @@ session_start();
 
 require_once __DIR__ . '/app/Core/Database.php';
 require_once __DIR__ . '/app/Core/Email.php';
+require_once __DIR__ . '/app/Core/Pix.php';
 require_once __DIR__ . '/app/Core/NotificacoesEmail.php';
 require_once __DIR__ . '/app/Models/Usuario.php';
 require_once __DIR__ . '/app/Models/Financeiro.php';
@@ -36,8 +37,9 @@ $rotasApp = [
     'clientes' => 'clientes',
     'excluir_cliente' => 'excluirCliente',
     'tipos_servico' => 'tiposServico',
-    'excluir_tipo_servico' => 'excluirTipoServico',
+    'adicionar_tipo_servico' => 'adicionarTipoServico',
     'enviar_notificacao' => 'enviarNotificacao',
+    'nova_cobranca' => 'planos',
     'planos' => 'planos',
     'gerar_cobrancas' => 'gerarCobrancas',
     'cobrancas' => 'cobrancas',

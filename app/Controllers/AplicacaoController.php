@@ -12,15 +12,10 @@ final class AplicacaoController
 
     public function painel(): void
     {
-        $u=$this->usuario();$dados=[];
-        if($this->temPerfil('profissional')){
-            $primeiro=date('Y-m-01');$ultimo=date('Y-m-t');
-            $dados['resumo']=$this->financeiro->resumo((int)$u['id'],$primeiro,$ultimo);
-            $dados['sugestoes']=$this->financeiro->sugestoesRenovacao((int)$u['id']);
-            $dados['pendentes']=array_slice($this->financeiro->cobrancasProfissional((int)$u['id']),0,6);
-        }
-        if($this->temPerfil('cliente'))$dados['cobrancasCliente']=$this->financeiro->cobrancasCliente((int)$u['id']);
-        $this->render('dashboard',$dados);
+        $this->usuario();
+        if($this->temPerfil('profissional'))$this->ir('relatorios');
+        if($this->temPerfil('cliente'))$this->ir('minhas_cobrancas');
+        $this->ir('login');
     }
 
     public function clientes(): void
@@ -48,40 +43,95 @@ final class AplicacaoController
 
     public function planos(): void
     {
-        $p=$this->profissional();$erro='';
-        if(($_SERVER['REQUEST_METHOD']??'GET')==='POST'){
-            $this->csrf();
-            try{
-                $id=$this->financeiro->criarPlano((int)$p['id'],(int)($_POST['cliente_id']??0),(string)($_POST['modalidade']??''),(float)str_replace(',','.',(string)($_POST['valor']??'0')),(string)($_POST['frequencia']??'mensal'),(int)($_POST['quantidade_periodos']??$_POST['intervalo']??1),(int)($_POST['tipo_servico_id']??0));
-                $this->flash('mensagem','Plano criado. Gere as cobranças pela opção abaixo.');$this->ir('planos');
-            }catch(Throwable $e){error_log($e->getMessage());$erro='Confira cliente, valor, modalidade e tipo de serviço.';}
-        }
-        $tipos=$this->financeiro->tiposServico((int)$p['id']);$configuracao=$this->financeiro->configuracao((int)$p['id']);
-        $temInstrucoesPagamento=trim((string)($configuracao['instrucoes_pagamento']??''))!=='';
-        $this->render('planos',['planos'=>$this->financeiro->planos((int)$p['id']),'clientes'=>$this->financeiro->clientes((int)$p['id']),'tipos'=>$tipos,'servicos'=>$tipos,'temInstrucoesPagamento'=>$temInstrucoesPagamento,'erro'=>$erro]);
+        $p=$this->profissional();
+        $tokensCobranca=(array)($_SESSION['tokens_cobranca_direta']??[]);$agora=time();
+        $tokensCobranca=array_filter($tokensCobranca,static fn($criadoEm)=>is_numeric($criadoEm)&&(int)$criadoEm>=$agora-3600);
+        $tokenCobrancaDireta=bin2hex(random_bytes(32));$tokensCobranca[$tokenCobrancaDireta]=$agora;
+        if(count($tokensCobranca)>10)$tokensCobranca=array_slice($tokensCobranca,-10,null,true);
+        $_SESSION['tokens_cobranca_direta']=$tokensCobranca;
+        $configuracao=$this->financeiro->configuracao((int)$p['id']);
+        $this->render('planos',[
+            'clientes'=>$this->financeiro->clientes((int)$p['id']),
+            'tipos'=>$this->financeiro->tiposServico((int)$p['id']),
+            'tokenCobrancaDireta'=>$tokenCobrancaDireta,
+            'temInstrucoesPagamento'=>trim((string)($configuracao['instrucoes_pagamento']??''))!==''
+        ]);
     }
 
     public function gerarCobrancas(): void
     {
         $p=$this->profissional();$this->csrf();
         $configuracao=$this->financeiro->configuracao((int)$p['id']);
-        if(trim((string)($configuracao['instrucoes_pagamento']??''))===''){$this->flash('erro','Antes de gerar cobranças, cadastre as instruções de pagamento na área Recebimentos.');$this->ir('planos');}
+        if(trim((string)($configuracao['instrucoes_pagamento']??''))===''){
+            $this->flash('erro','Antes de gerar cobranças, cadastre as instruções de pagamento na área Recebimentos.');
+            $this->ir('nova_cobranca');
+        }
         $planoId=(int)($_POST['plano_id']??0);
-        try{$n=$this->financeiro->gerarCobrancas((int)$p['id'],$planoId,(string)($_POST['data_vencimento']??''),(int)($_POST['quantidade']??1),(int)($_POST['tipo_servico_id']??0),(int)($_POST['quantidade_atividades']??1));if($n>0){try{$notificacaoId=$this->financeiro->notificacaoInicialRecente((int)$p['id'],$planoId);if($notificacaoId)(new NotificacoesEmail())->processar(1,'cobranca_gerada',$notificacaoId);}catch(Throwable $emailErro){error_log('PagueProf envio de aviso inicial: '.$emailErro->getMessage());}}$this->flash('mensagem',$n.' cobrança(s) gerada(s). A notificação da cobrança mais próxima foi tentada; as demais aguardam envio manual.');}
-        catch(Throwable $e){error_log($e->getMessage());$this->flash('erro','Não foi possível gerar as cobranças. Verifique o plano e a data.');}
-        $this->ir('planos');
+        $clienteId=(int)($_POST['cliente_id']??0);
+        if($planoId>0){
+            try{
+                $criados=$this->financeiro->gerarCobrancas((int)$p['id'],$planoId,(string)($_POST['data_vencimento']??''),(int)($_POST['quantidade']??0));
+                if($criados<1)throw new RuntimeException('Nenhuma nova cobrança foi criada para as datas informadas.');
+                $notificacaoId=$this->financeiro->notificacaoInicialRecente((int)$p['id'],$planoId);
+                if($notificacaoId){try{(new NotificacoesEmail())->processar(1,'cobranca_gerada',$notificacaoId);}catch(Throwable $emailErro){error_log('PagueProf envio da primeira cobrança sugerida: '.$emailErro->getMessage());}}
+                $this->flash('mensagem',$criados===1?'1 cobrança adicionada à série.':'Nova série gerada com '.$criados.' cobranças.');
+                $this->ir('relatorios');
+            }catch(Throwable $e){
+                error_log($e->getMessage());$this->flash('erro','Não foi possível gerar a nova série. Confira o vencimento, a quantidade entre 1 e 36 e se ainda não existem cobranças nessas datas.');$this->ir('relatorios');
+            }
+        }
+        $tokensCobranca=(array)($_SESSION['tokens_cobranca_direta']??[]);
+        $tokenRecebido=(string)($_POST['token_cobranca_direta']??'');
+        $tokenValido=isset($tokensCobranca[$tokenRecebido])&&(int)$tokensCobranca[$tokenRecebido]>=time()-3600;
+        unset($tokensCobranca[$tokenRecebido]);$_SESSION['tokens_cobranca_direta']=$tokensCobranca;
+        if(!$tokenValido){
+            $this->flash('erro','Este formulário já foi enviado ou expirou. Confira o Financeiro antes de tentar novamente.');
+            $this->ir('cobrancas');
+        }
+        $valorTexto=trim((string)($_POST['valor_servico']??''));
+        try{
+            if(!preg_match('/^\d{1,8}(?:[.,]\d{1,2})?$/D',$valorTexto))throw new InvalidArgumentException('Valor inválido.');
+            $valor=(float)str_replace(',','.',$valorTexto);
+            $resultado=$this->financeiro->gerarCobrancasDiretas(
+                (int)$p['id'],
+                $clienteId,
+                (int)($_POST['tipo_servico_id']??0),
+                $valor,
+                (string)($_POST['data_vencimento']??''),
+                (int)($_POST['quantidade']??0)
+            );
+            $notificacaoId=(int)($resultado['notificacao_inicial_id']??0);
+            if($notificacaoId>0){
+                try{(new NotificacoesEmail())->processar(1,'cobranca_gerada',$notificacaoId);}
+                catch(Throwable $emailErro){error_log('PagueProf envio do primeiro aviso: '.$emailErro->getMessage());}
+            }
+            $quantidade=(int)$resultado['quantidade'];
+            $substantivo=$quantidade===1?'cobrança gerada':'cobranças geradas';
+            $this->flash('mensagem',$quantidade.' '.$substantivo.'. A notificação da primeira foi tentada; as demais aguardam envio manual.');
+            header('Location: index.php?rota=cobrancas&cliente_id='.$clienteId);exit;
+        }catch(Throwable $e){
+            error_log($e->getMessage());
+            $this->flash('erro','Não foi possível gerar. Confira cliente, serviço, valor, quantidade entre 1 e 36, vencimento e instruções de pagamento.');
+            $this->ir('nova_cobranca');
+        }
     }
 
     public function tiposServico(): void
     {
-        $p=$this->profissional();$erro='';
-        if(($_SERVER['REQUEST_METHOD']??'GET')==='POST'){$this->csrf();try{$this->financeiro->salvarTipoServico((int)$p['id'],trim((string)($_POST['nome']??'')));$this->flash('mensagem','Tipo de serviço salvo.');$this->ir('tipos_servico');}catch(Throwable $e){$erro='Informe um nome válido (2 a 100 caracteres).';}}
-        $this->render('tipos_servico',['tipos'=>$this->financeiro->tiposServico((int)$p['id']),'erro'=>$erro]);
+        $this->profissional();
+        $this->ir('nova_cobranca');
     }
 
-    public function excluirTipoServico(): void
+    public function adicionarTipoServico(): void
     {
-        $p=$this->profissional();$this->csrf();try{$this->financeiro->excluirTipoServico((int)$p['id'],(int)($_POST['tipo_servico_id']??0));$this->flash('mensagem','Tipo removido.');}catch(Throwable $e){$this->flash('erro','Não foi possível remover o tipo (pode estar em uso).');}$this->ir('tipos_servico');
+        if(($_SERVER['REQUEST_METHOD']??'GET')!=='POST'){http_response_code(405);header('Content-Type: application/json; charset=UTF-8');echo json_encode(['erro'=>'Método não permitido.'],JSON_UNESCAPED_UNICODE);exit;}
+        $p=$this->profissional();$this->csrf();header('Content-Type: application/json; charset=UTF-8');
+        $nome=trim((string)($_POST['nome']??''));
+        try{$id=$this->financeiro->salvarTipoServico((int)$p['id'],$nome);echo json_encode(['id'=>$id,'nome'=>$nome],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);}
+        catch(InvalidArgumentException $e){http_response_code(422);echo json_encode(['erro'=>$e->getMessage()],JSON_UNESCAPED_UNICODE);}
+        catch(PDOException $e){http_response_code(422);$mensagem=(string)$e->getCode()==='23000'?'Este serviço já está cadastrado.':'Não foi possível cadastrar o serviço.';echo json_encode(['erro'=>$mensagem],JSON_UNESCAPED_UNICODE);}
+        catch(Throwable $e){error_log('PagueProf cadastro de tipo de serviço: '.$e->getMessage());http_response_code(500);echo json_encode(['erro'=>'Não foi possível cadastrar o serviço agora.'],JSON_UNESCAPED_UNICODE);}
+        exit;
     }
 
     public function enviarNotificacao(): void
@@ -102,20 +152,33 @@ final class AplicacaoController
     {
         $p=$this->profissional();
         $de=(string)($_GET['de']??'');$ate=(string)($_GET['ate']??'');$status=(string)($_GET['status']??'');$clienteId=(int)($_GET['cliente_id']??0);
-        $this->render('cobrancas',['cobrancas'=>$this->financeiro->cobrancasProfissional((int)$p['id'],$de,$ate,$status,$clienteId),'de'=>$de,'ate'=>$ate,'status'=>$status,'clienteId'=>$clienteId,'clientes'=>$this->financeiro->clientes((int)$p['id'],true),'comprovantes'=>$this->financeiro->comprovantesNoFinanceiro((int)$p['id'],$clienteId)]);
+        $ordenar=(string)($_GET['ordenar']??'vencimento_desc');
+        $this->render('cobrancas',[
+            'cobrancas'=>$this->financeiro->cobrancasProfissional((int)$p['id'],$de,$ate,$status,$clienteId,$ordenar),
+            'de'=>$de,'ate'=>$ate,'status'=>$status,'clienteId'=>$clienteId,'ordenar'=>$ordenar,
+            'clientes'=>$this->financeiro->clientes((int)$p['id'],true),
+            'comprovantes'=>$this->financeiro->comprovantesNoFinanceiro((int)$p['id'],$clienteId)
+        ]);
     }
 
     public function excluirCobranca(): void
     {
         $p=$this->profissional();$this->csrf();
-        try{$this->financeiro->cancelarCobranca((int)$p['id'],(int)($_POST['cobranca_id']??0));$this->flash('mensagem','Cobrança excluída da lista ativa. Ela foi cancelada e seu histórico foi preservado.');}
-        catch(Throwable $e){error_log($e->getMessage());$this->flash('erro',$e->getMessage()==='Uma cobrança paga não pode ser excluída.'?'Cobranças pagas não podem ser excluídas.':'Não foi possível excluir a cobrança. Ela pode já estar cancelada ou não pertencer a esta conta.');}
+        try{$this->financeiro->cancelarCobranca((int)$p['id'],(int)($_POST['cobranca_id']??0));$this->flash('mensagem','Cobrança cancelada. O registro e o histórico foram preservados.');}
+        catch(Throwable $e){error_log($e->getMessage());$this->flash('erro',$e->getMessage()==='Uma cobrança paga não pode ser cancelada.'?'Cobranças pagas não podem ser canceladas.':'Não foi possível cancelar a cobrança. Ela pode já estar cancelada ou não pertencer a esta conta.');}
         $this->ir('cobrancas');
     }
 
     public function minhasCobrancas(): void
     {
-        $a=$this->cliente();$this->render('minhas_cobrancas',['cobrancas'=>$this->financeiro->cobrancasCliente((int)$a['id'])]);
+        $a=$this->cliente();$cobrancas=$this->financeiro->cobrancasCliente((int)$a['id']);
+        foreach($cobrancas as &$c){
+            $c['pix_payload']='';
+            if(!in_array((string)$c['status'],['paga','cancelada','em_analise'],true)&&!empty($c['chave_pix_tipo'])&&!empty($c['chave_pix'])&&!empty($c['nome_recebedor'])&&!empty($c['cidade_recebedor'])){
+                try{$c['pix_payload']=Pix::gerarPayload((string)$c['nome_recebedor'],(string)$c['cidade_recebedor'],(string)$c['chave_pix_tipo'],(string)$c['chave_pix'],Pix::txidCobranca((int)$c['id']));}catch(Throwable $e){error_log('PagueProf: QR Pix indisponível para cobrança '.$c['id'].'.');}
+            }
+        }
+        unset($c);$this->render('minhas_cobrancas',['cobrancas'=>$cobrancas]);
     }
 
     public function enviarComprovante(): void
@@ -180,7 +243,8 @@ final class AplicacaoController
         if($clienteId>0&&!in_array($clienteId,array_map('intval',array_column($clientes,'id')),true))$clienteId=0;
         $serie=$this->financeiro->serieMensal((int)$p['id'],$de,$ate,$clienteId);
         $graficoMensal=array_map(static function(array $item): array { return ['mes'=>date('m/Y',strtotime($item['mes'].'-01')),'recebido'=>(float)$item['recebido'],'pendente'=>(float)$item['aberto']]; },$serie);
-        $this->render('relatorios',['resumo'=>$this->financeiro->resumo((int)$p['id'],$de,$ate,$clienteId),'cobrancas'=>$this->financeiro->cobrancasRelatorio((int)$p['id'],$de,$ate,$clienteId),'graficoMensal'=>$graficoMensal,'clientes'=>$clientes,'clienteId'=>$clienteId,'de'=>$de,'ate'=>$ate]);
+        $configuracao=$this->financeiro->configuracao((int)$p['id']);
+        $this->render('relatorios',['resumo'=>$this->financeiro->resumo((int)$p['id'],$de,$ate,$clienteId),'cobrancas'=>$this->financeiro->cobrancasRelatorio((int)$p['id'],$de,$ate,$clienteId),'graficoMensal'=>$graficoMensal,'clientes'=>$clientes,'clienteId'=>$clienteId,'de'=>$de,'ate'=>$ate,'sugestoes'=>$this->financeiro->sugestoesRenovacao((int)$p['id'],$clienteId),'temInstrucoesPagamento'=>trim((string)($configuracao['instrucoes_pagamento']??''))!=='']);
     }
 
     public function calendario(): void
@@ -201,13 +265,20 @@ final class AplicacaoController
 
     public function configuracoes(): void
     {
-        $p=$this->profissional();$erro='';
+        $p=$this->profissional();$erro='';$configuracao=$this->financeiro->configuracao((int)$p['id']);
         if(($_SERVER['REQUEST_METHOD']??'GET')==='POST'){
             $this->csrf();
-            try{$this->financeiro->salvarConfiguracao((int)$p['id'],(string)($_POST['instrucoes_pagamento']??''));$this->flash('mensagem','Instruções salvas.');$this->ir('configuracoes');}
-            catch(Throwable $e){$erro='Selecione uma opção válida e confira as instruções.';}
+            $configuracao=['instrucoes_pagamento'=>(string)($_POST['instrucoes_pagamento']??''),'nome_recebedor'=>(string)($_POST['nome_recebedor']??''),'chave_pix_tipo'=>(string)($_POST['chave_pix_tipo']??''),'chave_pix'=>(string)($_POST['chave_pix']??''),'cidade_recebedor'=>(string)($_POST['cidade_recebedor']??'')];
+            try{$this->financeiro->salvarConfiguracao((int)$p['id'],$configuracao['instrucoes_pagamento'],$configuracao['nome_recebedor'],$configuracao['cidade_recebedor'],$configuracao['chave_pix_tipo'],$configuracao['chave_pix']);$this->flash('mensagem','Recebimentos salvos.');$this->ir('configuracoes');}
+            catch(InvalidArgumentException $e){$erro=$e->getMessage();}
+            catch(Throwable $e){error_log('PagueProf salvar recebimentos: '.$e->getMessage());$erro='Não foi possível salvar. Confira os dados e a migração do banco.';}
         }
-        $this->render('configuracoes',['configuracao'=>$this->financeiro->configuracao((int)$p['id']),'erro'=>$erro]);
+        if(empty($configuracao['nome_recebedor']))$configuracao['nome_recebedor']=(string)($p['nome']??'');
+        $pixPayload='';
+        if(!empty($configuracao['chave_pix_tipo'])&&!empty($configuracao['chave_pix'])&&!empty($configuracao['cidade_recebedor'])){
+            try{$pixPayload=Pix::gerarPayload((string)$configuracao['nome_recebedor'],(string)$configuracao['cidade_recebedor'],(string)$configuracao['chave_pix_tipo'],(string)$configuracao['chave_pix']);}catch(Throwable $e){$erro=$erro?:'Revise os dados da chave Pix para gerar o QR Code.';}
+        }
+        $this->render('configuracoes',['configuracao'=>$configuracao,'erro'=>$erro,'pixPayload'=>$pixPayload,'nomeProfissional'=>(string)($p['nome']??'')]);
     }
 
     private function render(string $pagina,array $dados=[]): void

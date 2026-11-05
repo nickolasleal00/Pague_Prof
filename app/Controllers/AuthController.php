@@ -162,8 +162,8 @@ final class AuthController
         if (empty($_SESSION['usuario'])) {
             $this->redirecionar('login');
         }
-        $usuario = $_SESSION['usuario'];
-        require __DIR__ . '/../Views/dashboard/index.php';
+        $perfis=(array)($_SESSION['usuario']['perfis']??[]);
+        $this->redirecionar(in_array('profissional',$perfis,true)?'relatorios':(in_array('cliente',$perfis,true)?'minhas_cobrancas':'login'));
     }
 
     public function sair(): void
