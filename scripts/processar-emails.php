@@ -5,6 +5,7 @@ if(PHP_SAPI!=='cli'){http_response_code(404);exit;}
 $raiz=dirname(__DIR__);
 require_once $raiz.'/app/Core/Database.php';
 require_once $raiz.'/app/Core/Email.php';
+require_once $raiz.'/app/Core/Pix.php';
 require_once $raiz.'/app/Core/NotificacoesEmail.php';
 
 $lock=fopen(sys_get_temp_dir().'/pagueprof-email-'.sha1($raiz).'.lock','c');

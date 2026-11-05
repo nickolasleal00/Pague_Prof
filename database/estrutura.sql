@@ -81,6 +81,10 @@ CREATE TABLE IF NOT EXISTS planos_cobranca (
 CREATE TABLE IF NOT EXISTS configuracoes_profissional (
   profissional_id BIGINT UNSIGNED NOT NULL,
   instrucoes_pagamento VARCHAR(1000) NULL,
+  nome_recebedor VARCHAR(100) NULL,
+  chave_pix_tipo VARCHAR(12) NULL,
+  chave_pix VARCHAR(100) NULL,
+  cidade_recebedor VARCHAR(50) NULL,
   atualizado_em DATETIME NULL DEFAULT NULL,
   PRIMARY KEY (profissional_id),
   CONSTRAINT fk_config_profissional FOREIGN KEY (profissional_id) REFERENCES usuarios(id) ON DELETE CASCADE

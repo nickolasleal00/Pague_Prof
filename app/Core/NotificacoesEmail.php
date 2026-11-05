@@ -24,12 +24,14 @@ final class NotificacoesEmail
         $tipoValido=in_array($tipo,['cobranca_gerada','lembrete_vencimento'],true)||($tipo!==null&&preg_match('/^comprovante_[1-9][0-9]*$/D',$tipo));
         $filtro=$tipoValido?' AND n.tipo='.$this->pdo->quote((string)$tipo):'';if($notificacaoId!==null)$filtro.=' AND n.id='.(int)$notificacaoId;
         $consulta='SELECT n.id,n.cobranca_id,n.comprovante_id,n.tipo,n.status AS notificacao_status,c.valor,c.data_vencimento,c.status AS cobranca_status,
-                          a.nome AS cliente_nome,a.email AS cliente_email,u.nome AS profissional_nome,u.email AS profissional_email,cp.enviado_em AS comprovante_enviado_em
+                          a.nome AS cliente_nome,a.email AS cliente_email,u.nome AS profissional_nome,u.email AS profissional_email,cp.enviado_em AS comprovante_enviado_em,
+                          cfg.nome_recebedor AS nome_recebedor,cfg.chave_pix_tipo AS chave_pix_tipo,cfg.chave_pix AS chave_pix,cfg.cidade_recebedor AS cidade_recebedor
                    FROM notificacoes_email n
                    JOIN cobrancas c ON c.id=n.cobranca_id
                    JOIN clientes a ON a.id=c.cliente_id
                    JOIN usuarios u ON u.id=c.profissional_id
                    LEFT JOIN comprovantes cp ON cp.id=n.comprovante_id
+                   LEFT JOIN configuracoes_profissional cfg ON cfg.profissional_id=c.profissional_id
                    WHERE n.status IN ("pendente","falhou") AND n.tentativas<5'.$filtro.' ORDER BY n.id LIMIT '.$limite;
         $s=$this->pdo->query($consulta);
         $itens=$s->fetchAll();$resultado=['enviados'=>0,'falhas'=>0,'ignorados'=>0];
@@ -42,7 +44,8 @@ final class NotificacoesEmail
             try{
                 $assunto=$ehComprovante?'Novo comprovante para analisar | PagueProf':($n['tipo']==='cobranca_gerada'?'Nova cobrança do PagueProf':'Lembrete: cobrança vence amanhã');
                 $destinatario=$ehComprovante?(string)$n['profissional_email']:(string)$n['cliente_email'];
-                $mensagem=$this->mensagem($n);$this->email->enviar($destinatario,$assunto,$mensagem);
+                $payloadPix=$this->gerarPayloadPix($n,$ehComprovante);
+                $mensagem=$this->mensagem($n,$payloadPix);$this->email->enviar($destinatario,$assunto,$mensagem,$payloadPix);
                 $u=$this->pdo->prepare('UPDATE notificacoes_email SET status="enviada",enviada_em=NOW(),ultimo_erro=NULL WHERE id=:id');$u->execute(['id'=>$n['id']]);$resultado['enviados']++;
             }catch(Throwable $e){
                 $u=$this->pdo->prepare('UPDATE notificacoes_email SET status="falhou",ultimo_erro=:erro WHERE id=:id');$u->execute(['id'=>$n['id'],'erro'=>substr($e->getMessage(),0,250)]);error_log('PagueProf e-mail falhou; notificacao '.$n['id'].': '.$e->getMessage());$resultado['falhas']++;
@@ -57,7 +60,15 @@ final class NotificacoesEmail
         $u=$this->pdo->prepare('UPDATE notificacoes_email SET status="pendente" WHERE id=:id AND status IN ("aguardando_envio_profissional","falhou") AND tentativas<5');$u->execute(['id'=>$notificacaoId]);if($u->rowCount()!==1)throw new RuntimeException('Notificação indisponível ou limite de tentativas atingido.');return $this->processar(1,'cobranca_gerada',$notificacaoId);
     }
 
-    private function mensagem(array $n): string
+    private function gerarPayloadPix(array $n,bool $ehComprovante): ?string
+    {
+        if($ehComprovante||!in_array((string)($n['tipo']??''),['cobranca_gerada','lembrete_vencimento'],true))return null;
+        if(empty($n['chave_pix_tipo'])||empty($n['chave_pix'])||empty($n['nome_recebedor'])||empty($n['cidade_recebedor']))return null;
+        try{return Pix::gerarPayload((string)$n['nome_recebedor'],(string)$n['cidade_recebedor'],(string)$n['chave_pix_tipo'],(string)$n['chave_pix'],Pix::txidCobranca((int)$n['cobranca_id']));}
+        catch(Throwable $e){error_log('PagueProf: dados Pix inválidos na configuração do profissional '.$n['profissional_nome'].'.');return null;}
+    }
+
+    private function mensagem(array $n,?string $payloadPix=null): string
     {
         $valor='R$ '.number_format((float)$n['valor'],2,',','.');$vencimento=date('d/m/Y',strtotime((string)$n['data_vencimento']));
         if(!empty($n['comprovante_id'])){
@@ -76,8 +87,13 @@ final class NotificacoesEmail
         }
         if($n['tipo']==='cobranca_gerada')$abertura='Olá '.$n['cliente_nome']."\n\nUma nova cobrança foi gerada pelo profissional ".$n['profissional_nome'].'.';
         else $abertura='Olá '.$n['cliente_nome']."\n\nEste é um lembrete de que sua cobrança vence amanhã.";
+        $dadosPix='';
+        if($payloadPix!==null){
+            $tipo=(string)$n['chave_pix_tipo'];$chave=(string)$n['chave_pix'];$tipoLabel=$tipo==='cpf'?'CPF':'telefone';
+            $dadosPix="\n\nDados para pagamento Pix\nRecebedor: ".$n['nome_recebedor']."\nChave Pix (".$tipoLabel."): ".Pix::formatarChave($tipo,$chave)."\nEscaneie o QR Pix incorporado abaixo (estático, sem valor):\n[[PIX_QR_IMAGE]]\nChave para copiar: ".$chave."\nPix copia e cola:\n".$payloadPix."\nInforme o valor desta cobrança ao pagar. A confirmação continua dependendo da conferência do comprovante pelo profissional.";
+        }
         $appUrl=rtrim(Database::valor('APP_URL'),' /');$link=$appUrl!==''?$appUrl.'/index.php?rota=login':'PagueProf';
-        return $abertura."\n\nValor: ".$valor."\nVencimento: ".$vencimento."\n\nAcesse sua área de cliente no PagueProf para consultar os detalhes e as opções de pagamento:\n".$link."\n\nEsta mensagem foi enviada automaticamente. Não responda a este e-mail.";
+        return $abertura."\n\nValor: ".$valor."\nVencimento: ".$vencimento.$dadosPix."\n\nAcesse sua área de cliente no PagueProf para consultar os detalhes e as opções de pagamento:\n".$link."\n\nEsta mensagem foi enviada automaticamente. Não responda a este e-mail.";
     }
 
     private function marcarIgnorada(int $id): void

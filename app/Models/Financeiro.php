@@ -11,14 +11,25 @@ final class Financeiro
         $s->execute(['id' => $profissionalId]);
         $s = $this->db()->prepare('SELECT * FROM configuracoes_profissional WHERE profissional_id=:id');
         $s->execute(['id' => $profissionalId]);
-        return $s->fetch() ?: ['instrucoes_pagamento'=>''];
+        return $s->fetch() ?: ['instrucoes_pagamento'=>'','nome_recebedor'=>null,'chave_pix_tipo'=>null,'chave_pix'=>null,'cidade_recebedor'=>null];
     }
 
-    public function salvarConfiguracao(int $profissionalId, string $instrucoes): void
+    public function salvarConfiguracao(int $profissionalId, string $instrucoes, string $nomeRecebedor, string $cidade, string $tipoChave, string $chave): void
     {
-        $sql = 'INSERT INTO configuracoes_profissional (profissional_id,instrucoes_pagamento,atualizado_em)
-                VALUES (:id,:instr,NOW()) ON DUPLICATE KEY UPDATE instrucoes_pagamento=VALUES(instrucoes_pagamento), atualizado_em=NOW()';
-        $this->db()->prepare($sql)->execute(['id'=>$profissionalId,'instr'=>substr(trim($instrucoes),0,1000)]);
+        $instrucoes=trim($instrucoes);
+        if(strlen($instrucoes)>1000)throw new InvalidArgumentException('As instruções devem ter até 1000 caracteres.');
+        $tipoChave=strtolower(trim($tipoChave));$chave=trim($chave);
+        $nome=null;$cidadeNormalizada=null;$chaveNormalizada=null;
+        if($tipoChave!==''){
+            $nome=Pix::normalizarNome($nomeRecebedor);
+            $cidadeNormalizada=Pix::normalizarCidade($cidade);
+            $chaveNormalizada=Pix::normalizarChave($tipoChave,$chave);
+        }elseif($chave!==''){
+            throw new InvalidArgumentException('Selecione se a chave Pix é CPF ou telefone.');
+        }
+        $sql = 'INSERT INTO configuracoes_profissional (profissional_id,instrucoes_pagamento,nome_recebedor,chave_pix_tipo,chave_pix,cidade_recebedor,atualizado_em)
+                VALUES (:id,:instr,:nome,:tipo,:chave,:cidade,NOW()) ON DUPLICATE KEY UPDATE instrucoes_pagamento=VALUES(instrucoes_pagamento),nome_recebedor=VALUES(nome_recebedor),chave_pix_tipo=VALUES(chave_pix_tipo),chave_pix=VALUES(chave_pix),cidade_recebedor=VALUES(cidade_recebedor),atualizado_em=NOW()';
+        $this->db()->prepare($sql)->execute(['id'=>$profissionalId,'instr'=>$instrucoes,'nome'=>$nome,'tipo'=>$tipoChave!==''?$tipoChave:null,'chave'=>$chaveNormalizada,'cidade'=>$cidadeNormalizada]);
     }
 
     public function clientes(int $profissionalId,bool $incluirInativos=false): array
@@ -107,40 +118,81 @@ final class Financeiro
     {
         if(trim((string)($this->configuracao($profissionalId)['instrucoes_pagamento']??''))==='')throw new RuntimeException('Cadastre as instruções de pagamento antes de gerar cobranças.');
         $s=$this->db()->prepare('SELECT pc.*,a.nome FROM planos_cobranca pc JOIN clientes a ON a.id=pc.cliente_id WHERE pc.id=:id AND pc.profissional_id=:p AND pc.ativo=1');
-        $s->execute(['id'=>$planoId,'p'=>$profissionalId]);$plano=$s->fetch();if(!$plano)throw new RuntimeException('Plano não encontrado.');
+        $s->execute(['id'=>$planoId,'p'=>$profissionalId]);$plano=$s->fetch();if(!$plano)throw new RuntimeException('Série não encontrada.');
         $data=DateTimeImmutable::createFromFormat('!Y-m-d',$dataInicial);
-        if(!$data || $data->format('Y-m-d')!==$dataInicial || $quantidade<1 || $quantidade>12)throw new InvalidArgumentException('Data ou quantidade inválida.');
-        $freq=$plano['frequencia'];$intervalo=max(1,(int)$plano['intervalo']);
-        if($plano['modalidade']==='por_atividade'){if(!$this->tipoServicoDoProfissional($profissionalId,$tipoServicoId)||$quantidadeAtividades<1||$quantidadeAtividades>1000)throw new InvalidArgumentException('Tipo de serviço ou quantidade inválida.');$quantidade=min($quantidade,1);}else{$tipoServicoId=0;$quantidadeAtividades=1;}
-        $diaReferencia=(int)$data->format('d');
-        $pdo=$this->db();$criados=0;$pdo->beginTransaction();
-        try {
+        if(!$data||$data->format('Y-m-d')!==$dataInicial||$quantidade<1||$quantidade>36)throw new InvalidArgumentException('Data ou quantidade inválida.');
+        $modalidade=(string)$plano['modalidade'];$frequencia=(string)$plano['frequencia'];$intervalo=max(1,(int)$plano['intervalo']);
+        if($modalidade==='por_atividade'){
+            if(!$this->tipoServicoDoProfissional($profissionalId,$tipoServicoId)||$quantidadeAtividades<1||$quantidadeAtividades>1000)throw new InvalidArgumentException('Tipo de serviço ou quantidade inválida.');
+            $quantidade=min($quantidade,1);
+        }else{
+            $tipoServicoId=(int)($plano['tipo_servico_id']??0);$quantidadeAtividades=1;
+        }
+        $diaReferencia=(int)$data->format('d');$pdo=$this->db();$criados=0;$pdo->beginTransaction();
+        try{
             for($i=0;$i<$quantidade;$i++){
                 $venc=$data->format('Y-m-d');
                 $dup=$pdo->prepare('SELECT id FROM cobrancas WHERE plano_id=:plano AND data_vencimento=:data LIMIT 1');$dup->execute(['plano'=>$planoId,'data'=>$venc]);
                 if(!$dup->fetch()){
                     $ref='pp-'.$planoId.'-'.bin2hex(random_bytes(12));
+                    $valor=$modalidade==='por_atividade'?number_format((float)$plano['valor']*$quantidadeAtividades,2,'.',''):$plano['valor'];
                     $ins=$pdo->prepare('INSERT INTO cobrancas (referencia_externa,profissional_id,cliente_id,plano_id,valor,data_vencimento,status,tipo_servico_id,quantidade_atividades) VALUES (:ref,:p,:a,:pl,:v,:d,"pendente",:ts,:qa)');
-                    $ins->execute(['ref'=>$ref,'p'=>$profissionalId,'a'=>$plano['cliente_id'],'pl'=>$planoId,'v'=>$plano['modalidade']==='por_atividade'?number_format((float)$plano['valor']*$quantidadeAtividades,2,'.',''):$plano['valor'],'d'=>$venc,'ts'=>$plano['modalidade']==='por_atividade'?$tipoServicoId:null,'qa'=>$plano['modalidade']==='por_atividade'?$quantidadeAtividades:null]);$cobrancaId=(int)$pdo->lastInsertId();
+                    $ins->execute(['ref'=>$ref,'p'=>$profissionalId,'a'=>$plano['cliente_id'],'pl'=>$planoId,'v'=>$valor,'d'=>$venc,'ts'=>$tipoServicoId?:null,'qa'=>$modalidade==='por_atividade'?$quantidadeAtividades:null]);$cobrancaId=(int)$pdo->lastInsertId();
                     $notificacao=$pdo->prepare('INSERT IGNORE INTO notificacoes_email (cobranca_id,tipo,status,criado_em) VALUES (:id,"cobranca_gerada",IF(:ordem=1,"pendente","aguardando_envio_profissional"),NOW())');$notificacao->execute(['id'=>$cobrancaId,'ordem'=>$criados+1]);$criados++;
                 }
-                if($freq==='mensal'){$proximo=$data->modify('first day of this month')->modify('+'.$intervalo.' months');$data=$proximo->setDate((int)$proximo->format('Y'),(int)$proximo->format('m'),min($diaReferencia,(int)$proximo->format('t')));}
-                elseif($freq==='quinzenal')$data=$data->modify('+'.(15*$intervalo).' days');
-                elseif($freq==='semanal')$data=$data->modify('+'.(7*$intervalo).' days');
+                if($frequencia==='mensal'){$proximo=$data->modify('first day of this month')->modify('+'.$intervalo.' months');$data=$proximo->setDate((int)$proximo->format('Y'),(int)$proximo->format('m'),min($diaReferencia,(int)$proximo->format('t')));}
+                elseif($frequencia==='quinzenal')$data=$data->modify('+'.(15*$intervalo).' days');
+                elseif($frequencia==='semanal')$data=$data->modify('+'.(7*$intervalo).' days');
                 else $data=$data->modify('+'.$intervalo.' days');
             }
             $pdo->commit();return $criados;
         }catch(Throwable $e){if($pdo->inTransaction())$pdo->rollBack();throw $e;}
     }
 
-    public function cobrancasProfissional(int $profissionalId, string $de='', string $ate='', string $status='',int $clienteId=0): array
+    public function gerarCobrancasDiretas(int $profissionalId,int $clienteId,int $tipoServicoId,float $valor,string $primeiroVencimento,int $quantidade): array
+    {
+        if(trim((string)($this->configuracao($profissionalId)['instrucoes_pagamento']??''))==='')throw new RuntimeException('Cadastre as instruções de pagamento antes de gerar cobranças.');
+        if(!$this->clienteDoProfissional($profissionalId,$clienteId))throw new RuntimeException('Cliente não encontrado ou inativo.');
+        if(!$this->tipoServicoDoProfissional($profissionalId,$tipoServicoId))throw new RuntimeException('Tipo de serviço inválido.');
+        if(!is_finite($valor)||$valor<=0||$valor>99999999.99)throw new InvalidArgumentException('Valor de serviço inválido.');
+        $data=DateTimeImmutable::createFromFormat('!Y-m-d',$primeiroVencimento);
+        if(!$data||$data->format('Y-m-d')!==$primeiroVencimento||$quantidade<1||$quantidade>36)throw new InvalidArgumentException('Vencimento ou quantidade inválida.');
+
+        $pdo=$this->db();$criadas=0;$notificacaoInicialId=0;$diaReferencia=(int)$data->format('d');
+        $pdo->beginTransaction();
+        try{
+            $plano=$pdo->prepare('INSERT INTO planos_cobranca (profissional_id,cliente_id,modalidade,valor,frequencia,intervalo,tipo_servico_id) VALUES (:profissional,:cliente,"mensal",:valor,"mensal",1,:servico)');
+            $plano->execute(['profissional'=>$profissionalId,'cliente'=>$clienteId,'valor'=>number_format($valor,2,'.',''),'servico'=>$tipoServicoId]);
+            $planoId=(int)$pdo->lastInsertId();
+            $sql='INSERT INTO cobrancas (referencia_externa,profissional_id,cliente_id,plano_id,valor,data_vencimento,status,tipo_servico_id,quantidade_atividades)
+                  VALUES (:ref,:profissional,:cliente,:plano,:valor,:vencimento,"pendente",:servico,NULL)';
+            $inserir=$pdo->prepare($sql);
+        $enfileirar=$pdo->prepare('INSERT INTO notificacoes_email (cobranca_id,tipo,status,criado_em) VALUES (:cobranca,"cobranca_gerada",IF(:ordem=1,"pendente","aguardando_envio_profissional"),NOW())');
+            for($i=0;$i<$quantidade;$i++){
+                $referencia='pp-'.$planoId.'-'.bin2hex(random_bytes(12));
+                $inserir->execute(['ref'=>$referencia,'profissional'=>$profissionalId,'cliente'=>$clienteId,'plano'=>$planoId,'valor'=>number_format($valor,2,'.',''),'vencimento'=>$data->format('Y-m-d'),'servico'=>$tipoServicoId]);
+                $cobrancaId=(int)$pdo->lastInsertId();
+                $enfileirar->execute(['cobranca'=>$cobrancaId,'ordem'=>$i+1]);
+                if($i===0)$notificacaoInicialId=(int)$pdo->lastInsertId();
+                $criadas++;
+                $proximo=$data->modify('first day of this month')->modify('+1 month');
+                $data=$proximo->setDate((int)$proximo->format('Y'),(int)$proximo->format('m'),min($diaReferencia,(int)$proximo->format('t')));
+            }
+            $pdo->commit();
+            return ['quantidade'=>$criadas,'notificacao_inicial_id'=>$notificacaoInicialId];
+        }catch(Throwable $e){if($pdo->inTransaction())$pdo->rollBack();throw $e;}
+    }
+
+    public function cobrancasProfissional(int $profissionalId, string $de='', string $ate='', string $status='',int $clienteId=0,string $ordenar='vencimento_desc'): array
     {
         $where=['c.profissional_id=:p'];$args=['p'=>$profissionalId];
         if($de!=='' && $this->dataValida($de)){$where[]='c.data_vencimento>=:de';$args['de']=$de;}
         if($ate!=='' && $this->dataValida($ate)){$where[]='c.data_vencimento<=:ate';$args['ate']=$ate;}
         if(in_array($status,['pendente','paga','em_analise','recusada','cancelada'],true)){$where[]='c.status=:status';$args['status']=$status;}
         if($clienteId>0){$where[]='c.cliente_id=:cliente';$args['cliente']=$clienteId;}
-        $sql='SELECT c.*,a.nome AS cliente_nome,a.email AS cliente_email,pc.modalidade,pc.frequencia,ts.nome AS tipo_servico_nome,n.id AS notificacao_id,n.status AS notificacao_status,n.tentativas AS notificacao_tentativas FROM cobrancas c JOIN clientes a ON a.id=c.cliente_id LEFT JOIN planos_cobranca pc ON pc.id=c.plano_id LEFT JOIN tipos_servico ts ON ts.id=c.tipo_servico_id LEFT JOIN notificacoes_email n ON n.cobranca_id=c.id AND n.tipo="cobranca_gerada" WHERE '.implode(' AND ',$where).' ORDER BY c.data_vencimento DESC,c.id DESC';
+        $ordens=['vencimento_desc'=>'c.data_vencimento DESC,c.id DESC','vencimento_asc'=>'c.data_vencimento ASC,c.id ASC','cliente_asc'=>'a.nome ASC,c.data_vencimento DESC','cliente_desc'=>'a.nome DESC,c.data_vencimento DESC','valor_desc'=>'c.valor DESC,c.data_vencimento DESC','valor_asc'=>'c.valor ASC,c.data_vencimento DESC','status'=>'CASE c.status WHEN "pendente" THEN 1 WHEN "em_analise" THEN 2 WHEN "recusada" THEN 3 WHEN "paga" THEN 4 ELSE 5 END,c.data_vencimento DESC'];
+        if(!isset($ordens[$ordenar]))$ordenar='vencimento_desc';
+        $sql='SELECT c.*,a.nome AS cliente_nome,a.email AS cliente_email,pc.modalidade,pc.frequencia,ts.nome AS tipo_servico_nome,n.id AS notificacao_id,n.status AS notificacao_status,n.tentativas AS notificacao_tentativas FROM cobrancas c JOIN clientes a ON a.id=c.cliente_id LEFT JOIN planos_cobranca pc ON pc.id=c.plano_id LEFT JOIN tipos_servico ts ON ts.id=c.tipo_servico_id LEFT JOIN notificacoes_email n ON n.cobranca_id=c.id AND n.tipo="cobranca_gerada" WHERE '.implode(' AND ',$where).' ORDER BY '.$ordens[$ordenar];
         $s=$this->db()->prepare($sql);$s->execute($args);return $s->fetchAll();
     }
 
@@ -151,7 +203,7 @@ final class Financeiro
             $s=$pdo->prepare('SELECT status FROM cobrancas WHERE id=:id AND profissional_id=:p FOR UPDATE');
             $s->execute(['id'=>$cobrancaId,'p'=>$profissionalId]);$status=$s->fetchColumn();
             if($status===false)throw new RuntimeException('Cobrança não encontrada.');
-            if($status==='paga')throw new RuntimeException('Uma cobrança paga não pode ser excluída.');
+            if($status==='paga')throw new RuntimeException('Uma cobrança paga não pode ser cancelada.');
             if($status==='cancelada')throw new RuntimeException('A cobrança já está cancelada.');
             $pdo->prepare('UPDATE cobrancas SET status="cancelada",atualizado_em=NOW() WHERE id=:id AND profissional_id=:p')->execute(['id'=>$cobrancaId,'p'=>$profissionalId]);
             $pdo->prepare('UPDATE notificacoes_email SET status="ignorada",ultimo_erro="Cobrança cancelada pelo profissional" WHERE cobranca_id=:id AND status IN ("pendente","falhou","aguardando_envio_profissional")')->execute(['id'=>$cobrancaId]);
@@ -167,9 +219,9 @@ final class Financeiro
 
     public function cobrancasCliente(int $usuarioId): array
     {
-        $sql='SELECT c.*,a.profissional_id,a.email AS email_cliente,a.nome AS cliente_nome,u.nome AS profissional_nome,cp.instrucoes_pagamento
+        $sql='SELECT c.*,a.profissional_id,a.email AS email_cliente,a.nome AS cliente_nome,u.nome AS profissional_nome,cp.instrucoes_pagamento,cp.nome_recebedor,cp.chave_pix_tipo,cp.chave_pix,cp.cidade_recebedor,ts.nome AS tipo_servico_nome
               FROM cobrancas c JOIN clientes a ON a.id=c.cliente_id JOIN usuarios u ON u.id=c.profissional_id
-              LEFT JOIN configuracoes_profissional cp ON cp.profissional_id=c.profissional_id
+              LEFT JOIN configuracoes_profissional cp ON cp.profissional_id=c.profissional_id LEFT JOIN tipos_servico ts ON ts.id=c.tipo_servico_id
               WHERE a.usuario_id=:u ORDER BY c.data_vencimento DESC,c.id DESC';
         $s=$this->db()->prepare($sql);$s->execute(['u'=>$usuarioId]);return $s->fetchAll();
     }
@@ -274,25 +326,22 @@ final class Financeiro
         $s=$this->db()->prepare($sql);$s->execute($args);return $s->fetchAll();
     }
 
-    public function sugestoesRenovacao(int $profissionalId): array
+    public function sugestoesRenovacao(int $profissionalId,int $clienteId=0): array
     {
         $planos=$this->planos($profissionalId);$out=[];
         foreach($planos as $p){
-            if(($p['modalidade']??'')!=='mensal')continue;
-            $s=$this->db()->prepare('SELECT SUM(CASE WHEN data_vencimento>=CURDATE() AND status IN ("pendente","em_analise","recusada") THEN 1 ELSE 0 END) futuras, MAX(CASE WHEN status="paga" THEN data_vencimento ELSE NULL END) ultima_paga FROM cobrancas WHERE plano_id=:id');
+            if(($p['modalidade']??'')!=='mensal'||($p['frequencia']??'')!=='mensal')continue;
+            if($clienteId>0&&(int)$p['cliente_id']!==$clienteId)continue;
+            $s=$this->db()->prepare('SELECT COUNT(*) AS total,SUM(CASE WHEN status="paga" THEN 1 ELSE 0 END) AS pagas,MAX(CASE WHEN status="paga" THEN data_vencimento ELSE NULL END) AS ultima_paga,MIN(data_vencimento) AS primeiro_vencimento FROM cobrancas WHERE plano_id=:id');
             $s->execute(['id'=>$p['id']]);$r=$s->fetch();
-            if((int)($r['futuras']??0)===0 && !empty($r['ultima_paga'])){
-                $p['ultima_paga']=$r['ultima_paga'];$base=new DateTimeImmutable($r['ultima_paga']);$passo=max(1,(int)$p['intervalo']);$diaReferencia=(int)$base->format('d');
-                if($p['frequencia']==='mensal'){$proximo=$base->modify('first day of this month')->modify('+'.$passo.' months');$base=$proximo->setDate((int)$proximo->format('Y'),(int)$proximo->format('m'),min($diaReferencia,(int)$proximo->format('t')));}
-                elseif($p['frequencia']==='quinzenal')$base=$base->modify('+'.(15*$passo).' days');
-                elseif($p['frequencia']==='semanal')$base=$base->modify('+'.(7*$passo).' days');
-                else $base=$base->modify('+'.$passo.' days');
-                $p['proximo_vencimento']=$base->format('Y-m-d');$out[]=$p;
-            }
+            if((int)($r['total']??0)<1||(int)($r['total']??0)!==(int)($r['pagas']??0)||empty($r['ultima_paga']))continue;
+            $ultimaPaga=new DateTimeImmutable($r['ultima_paga']);$diaReferencia=(int)(new DateTimeImmutable($r['primeiro_vencimento']))->format('d');
+            $proximo=$ultimaPaga->modify('first day of this month')->modify('+1 month');
+            $p['proximo_vencimento']=$proximo->setDate((int)$proximo->format('Y'),(int)$proximo->format('m'),min($diaReferencia,(int)$proximo->format('t')))->format('Y-m-d');
+            $p['ultima_paga']=$r['ultima_paga'];$out[]=$p;
         }
         return $out;
     }
-
 
     public function tiposServico(int $profissionalId): array
     {
