@@ -11,7 +11,7 @@ unset($_SESSION['mensagem']);
     <meta name="description" content="Acesse sua conta PagueProf para acompanhar serviços, cobranças e pagamentos.">
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
     <title>Entrar | PagueProf</title>
-    <link rel="stylesheet" href="assets/app.css">
+    <link rel="stylesheet" href="assets/app.css?v=20261112-menu-icons-upload-v4">
 </head>
 <body>
 <main class="auth-shell">

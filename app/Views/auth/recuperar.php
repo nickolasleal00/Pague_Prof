@@ -8,7 +8,7 @@ function escaparRecuperar(string $valor): string { return htmlspecialchars($valo
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
   <title>Recuperar senha | PagueProf</title>
-  <link rel="stylesheet" href="assets/app.css">
+  <link rel="stylesheet" href="assets/app.css?v=20261112-menu-icons-upload-v4">
 </head>
 <body>
 <main class="auth-shell">
