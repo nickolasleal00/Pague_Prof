@@ -7,6 +7,13 @@ final class Pix
     public static function normalizarChave(string $tipo, string $chave): string
     {
         $tipo = strtolower(trim($tipo));
+        if ($tipo === 'email') {
+            $email = trim($chave);
+            if (strlen($email) > 77 || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+                throw new InvalidArgumentException('Informe um e-mail válido com até 77 caracteres para a chave Pix.');
+            }
+            return $email;
+        }
         $digitos = preg_replace('/\D+/', '', $chave) ?? '';
 
         if ($tipo === 'cpf') {
@@ -32,7 +39,7 @@ final class Pix
         }
 
         if ($tipo !== 'telefone') {
-            throw new InvalidArgumentException('Selecione CPF ou telefone como chave Pix.');
+            throw new InvalidArgumentException('Selecione CPF, telefone ou e-mail como chave Pix.');
         }
         if (strlen($digitos) === 12 || strlen($digitos) === 13) {
             if (substr($digitos, 0, 2) !== '55') {
@@ -58,7 +65,11 @@ final class Pix
 
     public static function formatarChave(string $tipo, string $chave): string
     {
+        $tipo = strtolower(trim($tipo));
         $normalizada = self::normalizarChave($tipo, $chave);
+        if ($tipo === 'email') {
+            return $normalizada;
+        }
         if ($tipo === 'cpf') {
             return substr($normalizada, 0, 3) . '.' . substr($normalizada, 3, 3) . '.' . substr($normalizada, 6, 3) . '-' . substr($normalizada, 9, 2);
         }
