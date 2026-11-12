@@ -72,7 +72,7 @@ final class NotificacoesEmail
     {
         $valor='R$ '.number_format((float)$n['valor'],2,',','.');$vencimento=date('d/m/Y',strtotime((string)$n['data_vencimento']));
         if(!empty($n['comprovante_id'])){
-            $id=(int)$n['comprovante_id'];$appUrl=rtrim(Database::valor('APP_URL'),' /');
+            $id=(int)$n['comprovante_id'];$appUrl=rtrim($this->urlBase(),' /');
             if($appUrl==='')$appUrl='PagueProf';
             else $appUrl.='/index.php';
             $linkArquivo=$appUrl==='PagueProf'?'PagueProf':$appUrl.'?rota=baixar_comprovante&id='.$id;
@@ -89,11 +89,31 @@ final class NotificacoesEmail
         else $abertura='Olá '.$n['cliente_nome']."\n\nEste é um lembrete de que sua cobrança vence amanhã.";
         $dadosPix='';
         if($payloadPix!==null){
-            $tipo=(string)$n['chave_pix_tipo'];$chave=(string)$n['chave_pix'];$tipoLabel=$tipo==='cpf'?'CPF':'telefone';
+            $tipo=(string)$n['chave_pix_tipo'];$chave=(string)$n['chave_pix'];$tipoLabel=['cpf'=>'CPF','telefone'=>'telefone celular','email'=>'e-mail'][$tipo]??'Pix';
             $dadosPix="\n\nDados para pagamento Pix\nRecebedor: ".$n['nome_recebedor']."\nChave Pix (".$tipoLabel."): ".Pix::formatarChave($tipo,$chave)."\nEscaneie o QR Pix incorporado abaixo (estático, sem valor):\n[[PIX_QR_IMAGE]]\nChave para copiar: ".$chave."\nPix copia e cola:\n".$payloadPix."\nInforme o valor desta cobrança ao pagar. A confirmação continua dependendo da conferência do comprovante pelo profissional.";
         }
-        $appUrl=rtrim(Database::valor('APP_URL'),' /');$link=$appUrl!==''?$appUrl.'/index.php?rota=login':'PagueProf';
+        $appUrl=rtrim($this->urlBase(),' /');$link=$appUrl!==''?$appUrl.'/index.php?rota=login':'PagueProf';
         return $abertura."\n\nValor: ".$valor."\nVencimento: ".$vencimento.$dadosPix."\n\nAcesse sua área de cliente no PagueProf para consultar os detalhes e as opções de pagamento:\n".$link."\n\nEsta mensagem foi enviada automaticamente. Não responda a este e-mail.";
+    }
+
+    private function urlBase(): string
+    {
+        $configurada=trim(Database::valor('APP_URL'));
+        $partes=parse_url($configurada);
+        if(!is_array($partes)||empty($partes['host']))return rtrim($configurada,' /');
+        $esquema=strtolower((string)($partes['scheme']??'https'));
+        if(!in_array($esquema,['http','https'],true))$esquema='https';
+        $host=(string)$partes['host'];$porta=isset($partes['port'])?':'.(int)$partes['port']:'';
+        if(PHP_SAPI!=='cli'){
+            $script=(string)($_SERVER['SCRIPT_NAME']??'');$caminho=parse_url($script,PHP_URL_PATH);
+            if(is_string($caminho)&&$caminho!==''){
+                $diretorio=str_replace('\\','/',dirname($caminho));
+                $subpasta=($diretorio==='.'||$diretorio==='/')?'':'/'.trim($diretorio,'/');
+                return $esquema.'://'.$host.$porta.$subpasta;
+            }
+        }
+        $subpasta=isset($partes['path'])?'/'.trim((string)$partes['path'],'/'):'';
+        return $esquema.'://'.$host.$porta.$subpasta;
     }
 
     private function marcarIgnorada(int $id): void
