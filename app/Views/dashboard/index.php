@@ -9,7 +9,7 @@ $perfis = array_map(static fn($perfil) => ucfirst($perfil), $usuario['perfis']);
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
     <title>Painel | PagueProf</title>
-    <link rel="stylesheet" href="assets/app.css">
+    <link rel="stylesheet" href="assets/app.css?v=20261112-menu-icons-upload-v4">
 </head>
 <body>
 <header class="barra"><a class="marca" href="index.php?rota=painel"><span class="marca-icone">P</span><span>Pague<strong>Prof</strong></span></a><a class="sair" href="index.php?rota=sair">Sair</a></header>
