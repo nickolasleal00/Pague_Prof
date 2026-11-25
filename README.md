@@ -299,8 +299,8 @@ Projeto desenvolvido por alunos do curso de **Análise e Desenvolvimento de Sist
 | Alan | Back-end |
 | Fernando | Transferido para o turno da noite |
 | Filipe | Back-end e Banco de Dados |
-| Henrique | Front-end |
-| Nickolas | Back-end e Front-end |
+| Henrique | Front-end e GitHub |
+| Nickolas |  Front-end e GitHub |
 | Talita | Scrum Master e Analista de QA |
 | Vitor | Back-end e Front-end |
 
