@@ -63,7 +63,7 @@ Definimos os cargos de cada membro e criamos um protótipo visual de como seria 
 
 ### Evidências
 
-- **Repositório:https://github.com/Vitorkp/PagueProf** 
+- **Repositório:https://github.com/nickolasleal00/Pague_Prof** 
 - **Quadro Kanban:https://trello.com/b/XPZeyPlK/projeto-e-desenvolvimento-1**
 - **Deploy ou instruções para executar o projeto:**
 - **Outras evidências, se necessárias:**

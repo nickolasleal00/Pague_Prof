@@ -59,7 +59,7 @@ Nenhum impedimento crítico na Sprint 2. A principal dificuldade residiu no refi
 
 ### Evidências
 
-- **Repositório:** [https://github.com/Vitorkp/PagueProf](https://github.com/Vitorkp/PagueProf)
+- **Repositório:** [https://github.com/nickolasleal00/Pague_Prof](https://github.com/nickolasleal00/Pague_Prof)
 - **Quadro Kanban:** [https://trello.com/b/XPZeyPlK/projeto-e-desenvolvimento-1](https://trello.com/b/XPZeyPlK/projeto-e-desenvolvimento-1)
 
 ### Checklist de qualidade
